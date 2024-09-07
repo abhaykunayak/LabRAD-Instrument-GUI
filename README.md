@@ -1,2 +1,2 @@
-# LabRAD-Instrument-GUI
+# LabRAD Instrument GUI
 GUI for scientific instruments using the LabRAD protocol.
