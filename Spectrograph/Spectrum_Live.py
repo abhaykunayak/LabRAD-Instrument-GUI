@@ -1,8 +1,11 @@
 import numpy as np
 import scipy.io as sio
+
 from bokeh.plotting import figure, curdoc, show
-from bokeh.models import ColumnDataSource, Button, CustomJS, Slider, ColorBar, LogColorMapper, Div, Text, LogTicker, RangeSlider, Select
+from bokeh.models import ColumnDataSource, Button, CustomJS, Slider, ColorBar, LogColorMapper, Div, Text, LogTicker, RangeSlider, Select, Range1d, TextInput
 from bokeh.layouts import column, row, layout
+
+from collections import deque
 import time
 import labrad
 import yaml
@@ -25,7 +28,7 @@ params['FILENAME2'] = "Spectrum_2D"
 params["SpectroUPD"] = 10 #in seconds
 
 #Spectrogram time points (too many will cause lag) 
-params["specxres"]= 200
+params["specxres"]= 1000
 
 params["avgs"] = 5
 params["lgscale"] = 1e-3
@@ -38,6 +41,29 @@ params["freqstart"] = 0
 
 #with open(os.path.realpath(CONFIG_FILENAME),'r') as f:
 #    params = yaml.safe_load(f)
+
+possiblespans={
+    "191mHz": 0,
+    "382mHz": 1,
+    "763mHz": 2,
+    "1.5Hz": 3,
+    "3.1Hz": 4,
+    "6.1Hz": 5,
+    "12.2Hz": 6,
+    "24.4Hz": 7,
+    "48.75Hz": 8,
+    "97.5Hz": 9,
+    "195Hz": 10,
+    "390Hz": 11,
+    "780Hz": 12,
+    "1.56KHz": 13,
+    "3.125KHz": 14,
+    "6.25KHz": 15,
+    "12.5KHz": 16,
+    "25KHz": 17,
+    "50KHz": 18,
+    "100KHz": 19
+}
 
 
 SPANS = {0:0.191,
@@ -98,18 +124,24 @@ class Spectrum_Live:
         self.uploop = None
         self.docu = document
         self.updatecounter = 0
-        self.imgdata = np.empty((400,params["specxres"]))
-        self.timedata = np.empty(params["specxres"])
-        self.avg = np.empty((400,params["avgs"]))
+        self.dequeimage = deque(np.empty((params["specxres"],400)))
+        self.timedata = deque(np.empty(params["specxres"]))
+        self.avg = deque(np.empty((params["avgs"],400)))
+        self.lastupdatetime = time.time()
 
     def updatemain(self):
         l = [0,0]
+        
         try:
-            l = self.sr770.readpsdout(-1)
-            new = dict()
-            new['x'] = l[:,0]
-            new['y']= l[:,1]
-            ds.data = new
+            if(self.sr770.poll_FFT()):
+                l = self.sr770.readpsdout(-1)
+                new = dict()
+                new['x'] = l[:,0]
+                new['y']= l[:,1]
+                ds.data = new
+                self.lastupdatetime = time.time()
+            else:
+                return
         except Exception as e:
             print("Error occured in reading the psd from the SR770%s"%e)
         
@@ -118,14 +150,19 @@ class Spectrum_Live:
         #    self.avg = np.hstack((np.delete(self.avg,0,1),np.array(ds.data['y'], copy=False, subok=True, ndmin=2).T))
 
     def updatespectrogr(self):
-        self.imgdata = np.hstack((np.delete(self.imgdata,0,1),np.array(ds.data['y'], copy=False, subok=True, ndmin=2).T))
-        spgrds.data['values'] = [self.imgdata]
+        self.dequeimage.popleft()
+        self.dequeimage.append(np.array(ds.data['y']).T)
+        #self.imgdata = np.hstack((np.delete(self.imgdata,0,1),np.array(ds.data['y'], copy=False, subok=True, ndmin=2).T))
+        spgrds.data['values'] = [np.array(self.dequeimage).T]
         self.timedata = np.roll(self.timedata,1)
+
+    def resetSpectro(self):
+         self.dequeimage = deque(np.empty((params["specxres"],400)))
 
     def activatetog(self):
         if(self.uploop == None):
             activate.label = "Deactivate"
-            self.uploop = self.docu.add_periodic_callback(self.updatemain, 300)
+            self.uploop = self.docu.add_periodic_callback(self.updatemain, 100)
             self.uploopspg = self.docu.add_periodic_callback(self.updatespectrogr, 600)
         else:
             self.docu.remove_periodic_callback(self.uploop)
@@ -145,7 +182,6 @@ def init_labrad():
         sr770.set_timeout_gpib(0.1) #set the GPIB timeout to 100ms
 
         params["freqspan"] = SPANS[SPANS_REVERSED[sr770.span()['Hz']]] #translate the spans into proper text format. 
-
         params["freqstart"] = sr770.start_frequency()['Hz']
     except Exception as e:
         print("Failed to connect to server sr770.")
@@ -163,32 +199,37 @@ def init_labrad():
 sr770gui = init_labrad()
 
 #Spectrogram with colorbar
-p2 = figure(title="Spectrogram", x_axis_label='Time', y_axis_label='Frequency',toolbar_location="above")
-initdat1 = { "values" : [np.empty((400,params["specxres"]))]}
+TOOLTIPS = [
+    ("x", "$x"),
+    ("y", "$y"),
+    ("value", "@values"),
+]
+SPCGraph = figure(title="Spectrogram", x_axis_label='Time', y_axis_label='Frequency',toolbar_location="above",tooltips=TOOLTIPS)
+SPCGraph.min_border_left = 0
+SPCGraph.min_border_right = 0
+SPCGraph.min_border_top = 0
+SPCGraph.min_border_bottom = 0
+initdat1 = { "values" : [np.empty((400,params["specxres"]))], "freqstart":[params["freqstart"]],"specxres":[params["specxres"]],"freqspan":[params["freqspan"]]}
 spgrds = ColumnDataSource(initdat1)
 SpectroGramColor = LogColorMapper(low=1e-7,high=params["lgscale"],palette="Viridis256")
-sprg_ima = p2.image(image="values", x=0, y=params["freqstart"], dw=params["specxres"], dh=params["freqspan"],source=spgrds,color_mapper=SpectroGramColor)
+sprg_ima = SPCGraph.image(image="values", x=0, y="freqstart", dw='specxres', dh="freqspan",source=spgrds,color_mapper=SpectroGramColor)
+
+#color bar for spectrogram
 color_bar = ColorBar(color_mapper=SpectroGramColor, ticker=LogTicker(),
                      label_standoff=12, border_line_color=None, location=(0,0))
+SPCGraph.add_layout(color_bar, 'right')
 
-p2.add_layout(color_bar, 'right')
-
-#Spectrum straight.
-p1 = figure(title="Spectrum", x_axis_label='Frequency', y_axis_label='dbV',y_axis_type="log")
+#Spectrum graph itself..
+SPCTRMGraph = figure(title="Spectrum", x_axis_label='Frequency', y_axis_label='dbV',y_axis_type="log")
 initdat2 = {'x':[1], 'y': [2]}
 ds = ColumnDataSource(initdat2)
-r = p1.line(x='x',y='y',source=ds)
-
-activate = Button(label="Activate", aspect_ratio=2)
-activate.on_event('button_click', sr770gui.activatetog)
-
-save = Button(label="Save (Does not work)")
-#need to implement dv save feature.
+r = SPCTRMGraph.line(x='x',y='y',source=ds)
 
 
 
 
-spectroslider = RangeSlider(start=-7, end=7, value=[-5,-3], step=.1, title="Color Map Range exponent")
+
+spectroslider = RangeSlider(start=-7, end=7, value=[-7,-3], step=.1, title="Color Map Range exponent")
 spectroslider.js_on_change('value',
     CustomJS(args=dict(other=SpectroGramColor),
              code="other.high = 10**(this.value[1]); other.low = 10**(this.value[0])"
@@ -226,44 +267,40 @@ Spans = Select(name="Span", value = params["freqspan"],options=[
     "50KHz",
     "100KHz"
 ])
-button2 = Button(label="start freq")
-button3 = Button(label="center freq")
+startfreqbutt = Button(label="Update Start Freq")
+startfreqinput = TextInput(value="Type here")
+centerfreqbutt = Button(label="Update Center Freq")
+centerfreqinput = TextInput(value="Type here")
+
+Spanstext = Div(text="<b>Set the Span</b>", width=100, height=100)
+
+
+freqcontrol1 = row([startfreqbutt, startfreqinput], sizing_mode="scale_both")
+freqcontrol2 = row([centerfreqbutt, centerfreqinput],sizing_mode="scale_both")
+freqcontrol3 = row([Spanstext, Spans], sizing_mode="scale_both")
+
 button4 = Button(label="autoy-scale")
 button5 = Button(label="autorange: Off")
 
 button6 = Button(label="averaging")
 button7 = Button(label="save")
 button8 = Button(label="Local Mode (need to deactivate)")
+activate = Button(label="Activate", aspect_ratio=2)
+save = Button(label="Save (Does not work)")
 
+#need to implement dv save feature.
 #Create functions for callback on button and spans
 
-possiblespans={
-    "191mHz": 0,
-    "382mHz": 1,
-    "763mHz": 2,
-    "1.5Hz": 3,
-    "3.1Hz": 4,
-    "6.1Hz": 5,
-    "12.2Hz": 6,
-    "24.4Hz": 7,
-    "48.75Hz": 8,
-    "97.5Hz": 9,
-    "195Hz": 10,
-    "390Hz": 11,
-    "780Hz": 12,
-    "1.56KHz": 13,
-    "3.125KHz": 14,
-    "6.25KHz": 15,
-    "12.5KHz": 16,
-    "25KHz": 17,
-    "50KHz": 18,
-    "100KHz": 19
-}
 
 def span(attr, old, new):
     try:
         sr770gui.sr770.span(possiblespans[new])
         params["freqspan"] = SPANS[possiblespans[new]]
+        params["freqstart"] = ds.data['x'][0]
+        sr770gui.resetSpectro()
+        sprg_ima.glyph.update(y = params["freqstart"],dh=params["freqspan"])
+        #SPCGraph.y_range = Range1d( params["freqstart"], params['freqstart']+params["freqspan"])
+
     except KeyError as e:
         print("Error setting the span, span not found: %s"%e)
     except Exception as l:
@@ -282,19 +319,22 @@ def autorange():
 def localactivate():
     sr770gui.sr770.gpib_write("LOCL0")
 
+def startfreq():
+    sr770gui.sr770.
 # Attach callbacks to buttons
 Spans.on_change('value',span)
-#button2.on_click(start_freq)
-#button3.on_click(center_freq)
+startfreqbutt.on_click(start_freq)
+centerfreqbutt.on_click(center_freq)
 button4.on_click(autoy_scale)
 button5.on_click(autorange)
+activate.on_click(sr770gui.activatetog)
 
 #button6.on_click(averaging)
 #button7.on_click()
 button8.on_click(localactivate)
 
 # Create columns for buttons
-column1 = layout([Spans, button4], [button2, button5], [button3],sizing_mode="scale_both")
+column1 = layout(freqcontrol3, freqcontrol1, freqcontrol2, [button5, button4],sizing_mode="scale_both")
 column2 = column(button6, button7, button8)
 
 
@@ -306,8 +346,8 @@ settingswidgets = layout(
 ,sizing_mode="scale_both")
 
 lay = layout(
-    [settingswidgets,p1],
-    [p2],
+    [settingswidgets,SPCTRMGraph],
+    [SPCGraph],
 sizing_mode="scale_both")
 
 
