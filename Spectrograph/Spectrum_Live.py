@@ -17,7 +17,7 @@ import logging
 params = dict()
 
 params['ROOTDIR'] = r"C:\Users\Marconi\Young Lab Dropbox\Young Group\THz\Raw Data"                               
-params['DATADIR'] = "2024_08_20_AKNDB32_2B"  
+params['DATADIR'] = "2024_09_09_TL2714_ESP302"  
 params['FILENAME1'] = "Spectrum_1D"
 params['FILENAME2'] = "Spectrum_2D"
 
@@ -31,6 +31,14 @@ params["avgs"] = 5
 params["lgscale"] = 1e-3
 params["freqspan"] = 390
 params["freqstart"] = 0
+
+#Change later so that vscode can autocomplete variable names for now
+# Load config file
+#CONFIG_FILENAME = 'SpectrumLive.yml'
+
+#with open(os.path.realpath(CONFIG_FILENAME),'r') as f:
+#    params = yaml.safe_load(f)
+
 
 SPANS = {0:0.191,
               1:0.382,
@@ -145,7 +153,7 @@ def init_labrad():
 
     try: 
         dv = cxn.data_vault()
-        #dv.cd(params['DATADIR'])
+        dv.cd(params['DATADIR'])
     except Exception as e:
         print("Failed to connect to server datavault.")
         print(e)
