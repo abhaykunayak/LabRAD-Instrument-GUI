@@ -112,6 +112,7 @@ class Spectrum_Live:
     def updatespectrogr(self):
         self.imgdata = np.hstack((np.delete(self.imgdata,0,1),np.array(ds.data['y'], copy=False, subok=True, ndmin=2).T))
         spgrds.data['values'] = [self.imgdata]
+        self.timedata = np.roll(self.timedata,1)
 
     def activatetog(self):
         if(self.uploop == None):
