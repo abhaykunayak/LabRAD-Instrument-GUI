@@ -14,6 +14,9 @@ import os
 import glob
 import logging
 
+from labrad.units import Value, Unit
+from pyvisa.errors import VisaIOError
+
 
 
 #Parameter Definitions
@@ -34,6 +37,7 @@ params["avgs"] = 5
 params["lgscale"] = 1e-3
 params["freqspan"] = 390
 params["freqstart"] = 0
+params["updatespeed"] = 800
 
 #Change later so that vscode can autocomplete variable names for now
 # Load config file
@@ -125,6 +129,7 @@ class Spectrum_Live:
         self.docu = document
         self.updatecounter = 0
         self.dequeimage = deque(np.empty((params["specxres"],400)))
+        print(np.shape(self.dequeimage))
         self.timedata = deque(np.empty(params["specxres"]))
         self.avg = deque(np.empty((params["avgs"],400)))
         self.lastupdatetime = time.time()
@@ -141,18 +146,19 @@ class Spectrum_Live:
                 ds.data = new
                 self.lastupdatetime = time.time()
             else:
+                
                 return
-        except Exception as e:
+        except VisaIOError as e:
+            sr770gui.sr770.clearReadBuffer()
+            print("Attempting to clear the read buffer.")
             print("Error occured in reading the psd from the SR770%s"%e)
-        
-        #if(params['avgon']):  
-        #else:
-        #    self.avg = np.hstack((np.delete(self.avg,0,1),np.array(ds.data['y'], copy=False, subok=True, ndmin=2).T))
+        except Exception as r:
+            print(r)
+
 
     def updatespectrogr(self):
         self.dequeimage.popleft()
         self.dequeimage.append(np.array(ds.data['y']).T)
-        #self.imgdata = np.hstack((np.delete(self.imgdata,0,1),np.array(ds.data['y'], copy=False, subok=True, ndmin=2).T))
         spgrds.data['values'] = [np.array(self.dequeimage).T]
         self.timedata = np.roll(self.timedata,1)
 
@@ -163,7 +169,7 @@ class Spectrum_Live:
         if(self.uploop == None):
             activate.label = "Deactivate"
             self.uploop = self.docu.add_periodic_callback(self.updatemain, 100)
-            self.uploopspg = self.docu.add_periodic_callback(self.updatespectrogr, 600)
+            self.uploopspg = self.docu.add_periodic_callback(self.updatespectrogr, params["updatespeed"])
         else:
             self.docu.remove_periodic_callback(self.uploop)
             self.docu.remove_periodic_callback(self.uploopspg)
@@ -184,6 +190,8 @@ def init_labrad():
         params["freqspan"] = SPANS[SPANS_REVERSED[sr770.span()['Hz']]] #translate the spans into proper text format. 
         params["freqstart"] = sr770.start_frequency()['Hz']
     except Exception as e:
+        sr770.clearReadBuffer()
+        print("Attempting to clear the read buffer.")
         print("Failed to connect to server sr770.")
         print(e)
 
@@ -205,10 +213,6 @@ TOOLTIPS = [
     ("value", "@values"),
 ]
 SPCGraph = figure(title="Spectrogram", x_axis_label='Time', y_axis_label='Frequency',toolbar_location="above",tooltips=TOOLTIPS)
-SPCGraph.min_border_left = 0
-SPCGraph.min_border_right = 0
-SPCGraph.min_border_top = 0
-SPCGraph.min_border_bottom = 0
 initdat1 = { "values" : [np.empty((400,params["specxres"]))], "freqstart":[params["freqstart"]],"specxres":[params["specxres"]],"freqspan":[params["freqspan"]]}
 spgrds = ColumnDataSource(initdat1)
 SpectroGramColor = LogColorMapper(low=1e-7,high=params["lgscale"],palette="Viridis256")
@@ -296,16 +300,18 @@ def span(attr, old, new):
     try:
         sr770gui.sr770.span(possiblespans[new])
         params["freqspan"] = SPANS[possiblespans[new]]
-        params["freqstart"] = ds.data['x'][0]
-        sr770gui.resetSpectro()
-        sprg_ima.glyph.update(y = params["freqstart"],dh=params["freqspan"])
-        #SPCGraph.y_range = Range1d( params["freqstart"], params['freqstart']+params["freqspan"])
+        params['freqstart'] = sr770gui.sr770.start_frequency()["Hz"]
+        updateSpectrograph()
+
 
     except KeyError as e:
         print("Error setting the span, span not found: %s"%e)
     except Exception as l:
         print("Error setting the span: %s"%l)
-
+def updateSpectrograph():
+    sr770gui.resetSpectro()
+    sprg_ima.glyph.update(y = params["freqstart"],dh=params["freqspan"])
+    
 def autoy_scale():
     sr770gui.sr770.autoscale(-1)
 
@@ -319,8 +325,33 @@ def autorange():
 def localactivate():
     sr770gui.sr770.gpib_write("LOCL0")
 
-def startfreq():
-    sr770gui.sr770.
+def start_freq():
+    try:
+        start = float(''.join([c for c in startfreqinput.value if c in '1234567890.']))
+        end = start + params["freqspan"]
+        if(start >= 0 and end <= 100000):
+            params["freqstart"] = start
+            sr770gui.sr770.start_frequency(Value((start),"Hz"))
+            updateSpectrograph()
+        else:
+            startfreqinput.update(value="Not Valid, change span")
+        
+    except Exception as e:
+        print(e)
+def center_freq():
+    try:
+        center = float(''.join([c for c in centerfreqinput.value if c in '1234567890.']))
+        start = center - params["freqspan"]/2
+        end = center + params["freqspan"]/2
+        if(start >= 0 and end <= 100000):
+            params["freqstart"] = start
+            sr770gui.sr770.center_frequency(Value((center),"Hz"))
+            updateSpectrograph()
+        else:
+            centerfreqinput.update(value="Not Valid, change span")
+    except Exception as e:
+        print(e)
+
 # Attach callbacks to buttons
 Spans.on_change('value',span)
 startfreqbutt.on_click(start_freq)
@@ -352,6 +383,7 @@ sizing_mode="scale_both")
 
 
 sr770gui.docu.add_root(lay)
+
 
 
 
